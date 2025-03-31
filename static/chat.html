@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Group Chat</title>
+  <!-- Подключение Font Awesome -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/js/all.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; display: flex; height: 100vh; }
+    /* Левая панель */
+    .sidebar {
+      width: 25%;
+      background-color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      border-right: 2px solid #ccc;
+    }
+    .user, .group, .settings {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      cursor: pointer;
+    }
+    .user:hover, .group:hover, .settings:hover { background-color: #ddd; border-radius: 5px; }
+    .settings { align-self: flex-end; }
+    /* Основной чат */
+    .chat-container { flex: 1; display: flex; flex-direction: column; background-color: #E5DDD5; }
+    .chat-header {
+      background-color: #075E54;
+      color: white;
+      padding: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 1.2rem;
+    }
+    .chat-header .settings { cursor: pointer; }
+    .chat-messages {
+      flex: 1;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px; /* Increased gap between messages */
+      overflow-y: auto;
+    }
+    .message {
+      max-width: 60%;
+      padding: 12px 15px; /* Increased padding */
+      border-radius: 12px;
+      font-size: 1rem;
+      position: relative;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1); /* Added shadow */
+    }
+    .received { 
+      background-color: white; 
+      align-self: flex-start; 
+      border-bottom-left-radius: 4px; /* Speech bubble effect */
+    }
+    .sent { 
+      background-color: #DCF8C6; /* Changed to WhatsApp-like green */
+      align-self: flex-end; 
+      border-bottom-right-radius: 4px; /* Speech bubble effect */
+    }
+    .message .info {
+      font-size: 0.8rem;
+      font-weight: bold;
+      margin-bottom: 5px;
+      color: #555;
+    }
+    .message .text {
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+    .message .time {
+      font-size: 0.7rem;
+      color: #8c8c8c;
+      text-align: right;
+      margin-top: 3px;
+    }
+    /* Кнопка для редактирования/удаления */
+    .edit-delete {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    /* Выпадающее меню для сообщения */
+    .dropdown-menu {
+      position: absolute;
+      top: 25px;
+      right: 5px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      display: none;
+      z-index: 100;
+    }
+    .dropdown-menu button {
+      background: none;
+      border: none;
+      padding: 5px 10px;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
+    }
+    .dropdown-menu button:hover { background-color: #eee; }
+    /* Поле ввода */
+    .chat-input {
+      background-color: rgba(0, 0, 0, 0.1);
+      padding: 10px;
+      display: flex;
+      align-items: center;
+    }
+    .chat-input input {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 20px;
+      font-size: 1rem;
+    }
+    .chat-input button {
+      background-color: #2F4F3B;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      cursor: pointer;
+      margin-left: 10px;
+    }
+    /* Модальные окна */
+    .modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+    }
+    .modal-content {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      max-width: 400px;
+      width: 90%;
+    }
+    .modal-header {
+      font-size: 1.2rem;
+      margin-bottom: 15px;
+    }
+    .close-modal {
+      float: right;
+      cursor: pointer;
+      font-size: 1.2rem;
+    }
+    .modal button {
+      margin-top: 10px;
+    }
+
+      /* Стили для списка пользователей */
+      .users-list {
+        max-height: 300px;
+        overflow-y: auto;
+        margin: 15px 0;
+      }
+      .user-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+      }
+      .user-item:hover {
+        background-color: #f5f5f5;
+      }
+      .user-item.selected {
+        background-color: #e3f2fd;
+      }
+      .user-avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background-color: #ccc;
+        margin-right: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: bold;
+      }
+      .user-name {
+        font-weight: bold;
+      }
+      .user-checkbox {
+        margin-left: auto;
+      }
+      .form-input {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        margin: 10px 0;
+      }
+      .primary-button {
+        background-color: #075E54;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 10px 15px;
+        cursor: pointer;
+        width: 100%;
+      }
+      .modal-section {
+        margin: 15px 0;
+      }
+      .chat-list {
+        margin-top: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        overflow-y: auto;
+        flex: 1;
+      }
+      .chat-item {
+        display: flex;
+        align-items: center;
+        padding: 12px;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .chat-item:hover {
+        background-color: #e0e0e0;
+      }
+      .chat-item.active {
+        background-color: #e0e0e0;
+      }
+  </style>
+</head>
+<body>
+  <!-- Левая панель -->
+  <div class="sidebar">
+    <div class="user" onclick="createPrivateChat()">
+      <i class="fas fa-user"></i> <span>Создать личный чат</span>
+    </div>
+    <div class="group" onclick="createGroup()">
+      <i class="fas fa-users"></i> <span>Создать группу</span>
+    </div>
+    <div class="settings" onclick="openAppSettings()">
+      <i class="fas fa-cog"></i>
+    </div>
+  </div>
+  <!-- Основной чат -->
+  <div class="chat-container">
+    <div class="chat-header">
+      <span id="chatTitle">Выберите чат</span>
+      <span class="settings" onclick="openChatParticipants()">
+        <i class="fas fa-cog"></i>
+      </span>
+    </div>
+    <div class="chat-messages" id="messagesContainer">
+      <!-- Сообщения будут загружаться здесь -->
+    </div>
+    <div class="chat-input">
+      <input type="text" id="chatMessageInput" placeholder="Введите сообщение...">
+      <button id="sendMessageBtn">▶</button>
+    </div>
+  </div>
+
+  <!-- Модальное окно настроек приложения -->
+  <div class="modal" id="appSettingsModal">
+    <div class="modal-content">
+      <span class="close-modal" onclick="closeModal('appSettingsModal')">&times;</span>
+      <div class="modal-header">Настройки приложения</div>
+      <button onclick="changeTheme()">Поменять тему</button>
+      <button onclick="addNewUser()">Добавить пользователя</button>
+      <button onclick="createGroup()">Создать группу</button>
+    </div>
+  </div>
+
+  <!-- Модальное окно участников чата -->
+  <div id="chatParticipantsModal" class="modal">
+    <div class="modal-content">
+      <span class="close-modal" onclick="closeModal('chatParticipantsModal')">&times;</span>
+      <h3>Участники чата</h3>
+      <div id="participantsList"></div>
+    </div>
+  </div>
+
+  <!-- Модальное окно редактирования сообщения -->
+  <div class="modal" id="editMessageModal">
+    <div class="modal-content">
+      <span class="close-modal" onclick="closeModal('editMessageModal')">&times;</span>
+      <div class="modal-header">Редактировать сообщение</div>
+      <input type="text" id="editMessageInput" placeholder="Новое сообщение">
+      <button onclick="submitEdit()">Сохранить</button>
+    </div>
+  </div>
+
+   <!-- Модальное окно выбора пользователей -->
+   <div class="modal" id="userSelectionModal">
+    <div class="modal-content">
+      <span class="close-modal" onclick="closeModal('userSelectionModal')">&times;</span>
+      <div class="modal-header">Выберите пользователя</div>
+      <div id="usersList" class="users-list">
+        <!-- Список пользователей будет загружен сюда -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно создания группы -->
+  <div class="modal" id="createGroupModal">
+    <div class="modal-content">
+      <span class="close-modal" onclick="closeModal('createGroupModal')">&times;</span>
+      <div class="modal-header">Создание группы</div>
+      <input type="text" id="groupNameInput" placeholder="Название группы" class="form-input">
+      <div class="modal-section">
+        <h4>Выберите участников:</h4>
+        <div id="groupUsersList" class="users-list">
+          <!-- Список пользователей будет загружен сюда -->
+        </div>
+      </div>
+      <button onclick="submitGroupCreation()" class="primary-button">Создать группу</button>
+    </div>
+  </div>
+
+  <script src="chat.js"></script>
+</body>
+</html>
