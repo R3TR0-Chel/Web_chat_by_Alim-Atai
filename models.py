@@ -25,6 +25,7 @@ class Group(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True)
     background = Column(String, nullable=True)
+    type = Column(String, nullable=True)  # Добавляем поле type
 
 class GroupUser(Base):
     __tablename__ = "group_users"

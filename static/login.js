@@ -1,5 +1,5 @@
 // login.js
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = '';
 
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -8,7 +8,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   const password = document.getElementById("loginPassword").value;
   
   try {
-    const response = await fetch(`${API_URL}/login`, {
+    const response = await fetch(`/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password })
@@ -17,11 +17,11 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     const data = await response.json();
     
     if (response.ok) {
-      // Сохраняем токен и user_id в localStorage
+      // Store complete user data
       localStorage.setItem("access_token", data.access_token);
       localStorage.setItem("user_id", data.user_id);
-      alert("Вход выполнен успешно!");
-      window.location.href = "chat.html";
+      localStorage.setItem("username", username);
+      window.location.href = "/"; // Redirect to root instead of /chat
     } else {
       alert("Ошибка: " + data.detail);
     }
