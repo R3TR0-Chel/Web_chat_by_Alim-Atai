@@ -38,6 +38,7 @@ class Message(Base):
     id = Column(Integer, primary_key=True, index=True)
     content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    edited = Column(Integer, default=0)
     
     # Владелец сообщения (автор)
     author_id = Column(Integer, ForeignKey("users.id"))
@@ -54,4 +55,3 @@ class Message(Base):
     recipient_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     recipient = relationship("User", foreign_keys=[recipient_id])
     
-    edited = Column(Integer, default=0)

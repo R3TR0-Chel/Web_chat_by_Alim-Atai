@@ -1,4 +1,4 @@
-const API_URL = "";
+const API_URL = window.location.origin;
 const token = localStorage.getItem("access_token");
 const currentUserId = parseInt(localStorage.getItem("user_id")) || null;
 
@@ -7,7 +7,8 @@ if (!currentUserId || !token) {
 }
 
 let currentGroupId = null;
-let ws = null;
+let messageWS = null;
+let chatWS = null;
 let chats = [];
 let users = [];
 
@@ -17,7 +18,11 @@ const chatMessageInput = document.getElementById("chatMessageInput");
 const sendMessageBtn = document.getElementById("sendMessageBtn");
 
 // Инициализация
-document.addEventListener("DOMContentLoaded", initializeApp);
+window.addEventListener("DOMContentLoaded", async () => {
+    await loadChats();
+    setupEventListeners();
+    connectChatWebSocket();
+});
 
 async function initializeApp() {
     await loadChats();
@@ -43,30 +48,37 @@ function setupEventListeners() {
     });
 }
 
-// WebSocket
-function connectWebSocket(groupId) {
-    if (ws) {
-        ws.close();
-        ws = null;
+function connectChatWebSocket() {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/chats/${currentUserId}`;
+    chatWS = new WebSocket(wsUrl);
+
+    chatWS.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "group_update") {
+            handleGroupUpdate(data.data);
+        }
+    };
+}
+
+
+function connectMessageWebSocket(groupId) {
+    if (messageWS) {
+        messageWS.onclose = null;
+        messageWS.close();
     }
-    
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/${groupId}`;
-    
-    ws = new WebSocket(wsUrl);
-    
-    ws.onopen = () => {
-        console.log(`WebSocket connected to group ${groupId}`);
+
+    messageWS = new WebSocket(wsUrl);
+    messageWS.onopen = () => {
+        console.log("Connected to chat: " + groupId);
         fetchMessages();
     };
-    
-    ws.onmessage = (event) => {
+    messageWS.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        if (data.error) {
-            console.error(data.error);
-            return;
-        }
-        
+        if (data.error) return;
+
         if (data.type === "new_message" && data.data.group_id === currentGroupId) {
             displayMessages([data.data], true);
         } else if (data.type === "updated_message" && data.data.group_id === currentGroupId) {
@@ -75,62 +87,49 @@ function connectWebSocket(groupId) {
             removeMessage(data.data.id);
         }
     };
-    
-    ws.onclose = () => {
-        console.log("WebSocket closed. Reconnecting...");
-        setTimeout(() => connectWebSocket(groupId), 2000);
-    };
-    
-    ws.onerror = (err) => console.error("WebSocket error:", err);
 }
+
 
 // Сообщения
 async function sendMessage() {
     const content = chatMessageInput.value.trim();
-    if (!content || !ws || ws.readyState !== WebSocket.OPEN || !currentGroupId) {
-        return;
-    }
-    
-    ws.send(JSON.stringify({
+    if (!content || !messageWS || messageWS.readyState !== WebSocket.OPEN || !currentGroupId) return;
+
+    messageWS.send(JSON.stringify({
         content,
         author_id: currentUserId,
         group_id: currentGroupId
     }));
-    
+
     chatMessageInput.value = "";
 }
 
 async function fetchMessages() {
     try {
         const response = await fetch(`${API_URL}/messages?group_id=${currentGroupId}`, {
-            headers: { "Authorization": `Bearer ${token}` }
+            headers: { Authorization: `Bearer ${token}` }
         });
         if (response.ok) {
             const messages = await response.json();
             displayMessages(messages);
-        } else {
-            throw new Error("Failed to fetch messages");
         }
     } catch (err) {
-        console.error("Error fetching messages:", err);
+        console.error("Error loading messages", err);
     }
 }
 
 function displayMessages(messages, append = false) {
-    if (!append) {
-        messagesContainer.innerHTML = "";
-    }
-    
+    if (!append) messagesContainer.innerHTML = "";
+
     messages.forEach(msg => {
         const isSentByMe = msg.author_id === currentUserId;
         const messageDiv = document.createElement("div");
         messageDiv.className = `message ${isSentByMe ? 'sent' : 'received'}`;
         messageDiv.id = `message-${msg.id}`;
-        
-        // Получаем имя автора
-        const authorName = isSentByMe ? 'Вы' : 
-            (msg.author && msg.author.username ? msg.author.username : 'Unknown');
-        
+        messageDiv.setAttribute("data-message-id", msg.id);
+
+        const authorName = isSentByMe ? 'Вы' : (msg.author && msg.author.username ? msg.author.username : 'Unknown');
+
         messageDiv.innerHTML = `
             <div class="message-wrapper">
                 <div class="message-author">${authorName}</div>
@@ -142,40 +141,37 @@ function displayMessages(messages, append = false) {
             </div>
         `;
 
-        // Добавляем контекстное меню только для своих сообщений
         if (isSentByMe) {
             messageDiv.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 showContextMenu(e, msg);
             });
         }
-        
+
         messagesContainer.appendChild(messageDiv);
     });
-    
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-function updateMessage(updatedMsg) {
-    const msgDiv = document.getElementById(`message-${updatedMsg.id}`);
-    if (msgDiv) {
-        const content = msgDiv.querySelector(".message-content");
-        content.textContent = updatedMsg.content;
-        
-        const info = msgDiv.querySelector(".message-info");
-        info.innerHTML = `
-            ${new Date(updatedMsg.timestamp).toLocaleTimeString()}
-            ${updatedMsg.edited ? '(изменено)' : ''}
-        `;
-    }
+function updateMessage(msg) {
+    const msgDiv = document.getElementById(`message-${msg.id}`);
+    if (!msgDiv) return;
+    msgDiv.querySelector(".message-content").textContent = msg.content;
+    msgDiv.querySelector(".message-info").innerHTML = `
+        ${new Date(msg.timestamp).toLocaleTimeString()} ${msg.edited ? '(изменено)' : ''}
+    `;
 }
 
+
 function removeMessage(messageId) {
-    const msgDiv = messagesContainer.querySelector(`[data-message-id="${messageId}"]`);
+    const msgDiv = document.getElementById(`message-${messageId}`);
     if (msgDiv) msgDiv.remove();
 }
 
+
 async function deleteMessage(messageId) {
+
+
     if (!confirm("Удалить сообщение?")) return;
     
     try {
@@ -190,45 +186,6 @@ async function deleteMessage(messageId) {
     }
 }
 
-function openEditModal(msg) {
-    const modal = document.getElementById("editMessageModal");
-    const input = document.getElementById("editMessageInput");
-    // Используем JSON.parse для преобразования строки в объект
-    const message = typeof msg === 'string' ? JSON.parse(msg) : msg;
-    
-    input.value = message.content;
-    input.dataset.messageId = message.id;
-    modal.style.display = "flex";
-    input.focus();
-}
-
-async function submitEdit() {
-    const input = document.getElementById("editMessageInput");
-    const messageId = input.dataset.messageId;
-    const content = input.value.trim();
-    
-    if (!content) return;
-    
-    try {
-        const response = await fetch(`${API_URL}/messages/${messageId}`, {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${token}`
-            },
-            body: JSON.stringify({ content })
-        });
-        
-        if (!response.ok) {
-            throw new Error("Failed to edit message");
-        }
-        
-        closeModal("editMessageModal");
-    } catch (err) {
-        console.error("Error editing message:", err);
-        alert("Ошибка при редактировании сообщения");
-    }
-}
 
 // Чаты
 async function loadChats() {
@@ -288,16 +245,15 @@ function renderChatsList() {
 
 function switchToChat(chatId) {
     if (currentGroupId === chatId) return;
-    
     currentGroupId = chatId;
     const chat = chats.find(c => c.id === chatId);
+
     if (chat) {
         chatTitle.textContent = chat.name;
         messagesContainer.innerHTML = "";
-        connectWebSocket(chatId);
-        
-        document.querySelectorAll(".chat-item").forEach(item => item.classList.remove("active"));
-        const activeItem = document.querySelector(`.chat-item:has([onclick*="${chatId}"])`);
+        connectMessageWebSocket(chatId);
+        document.querySelectorAll(".chat-item").forEach(i => i.classList.remove("active"));
+        const activeItem = Array.from(document.querySelectorAll(".chat-item")).find(i => i.textContent.includes(chat.name));
         if (activeItem) activeItem.classList.add("active");
     }
 }
@@ -516,9 +472,7 @@ function toggleDropdown(toggleElem) {
     menu.style.display = menu.style.display === "block" ? "none" : "block";
 }
 
-function closeModal(modalId) {
-    document.getElementById(modalId).style.display = "none";
-}
+
 
 function openChatParticipants() {
     fetch(`${API_URL}/groups/${currentGroupId}/users`, {
@@ -556,22 +510,124 @@ function showContextMenu(e, msg) {
 
     const contextMenu = document.createElement('div');
     contextMenu.className = 'context-menu';
+
     contextMenu.innerHTML = `
-        <div class="context-menu-item" onclick="openEditModal('${JSON.stringify(msg).replace(/'/g, "\\'")}')">
-            <i class="fas fa-edit"></i> Изменить
-        </div>
-        <div class="context-menu-item" onclick="deleteMessage(${msg.id})">
-            <i class="fas fa-trash"></i> Удалить
-        </div>
+        <div class="context-menu-item edit-message" data-id="${msg.id}">✏️ Изменить</div>
+        <div class="context-menu-item delete-message" data-id="${msg.id}">🗑️ Удалить</div>
     `;
+
+    contextMenu.querySelector('.edit-message').addEventListener('click', () => openEditModal(msg));
+    contextMenu.querySelector('.delete-message').addEventListener('click', () => deleteMessage(msg.id));
 
     contextMenu.style.left = `${e.pageX}px`;
     contextMenu.style.top = `${e.pageY}px`;
-
     document.body.appendChild(contextMenu);
 
-    // Закрываем меню при клике вне его
-    document.addEventListener('click', () => {
-        contextMenu.remove();
-    }, { once: true });
+    document.addEventListener('click', () => contextMenu.remove(), { once: true });
 }
+
+function closeModal(id) {
+    document.getElementById(id).style.display = "none";
+}
+
+function openEditModal(msg) {
+    const modal = document.getElementById("editMessageModal");
+    const input = document.getElementById("editMessageInput");
+    input.value = msg.content;
+    input.dataset.messageId = msg.id;
+    modal.style.display = "flex";
+    input.focus();
+}
+
+async function submitEdit() {
+    const input = document.getElementById("editMessageInput");
+    const messageId = input.dataset.messageId;
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/messages/${messageId}`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify({ content })
+        });
+
+        if (!response.ok) throw new Error("Failed to edit message");
+        closeModal("editMessageModal");
+    } catch (err) {
+        console.error("Edit error", err);
+    }
+}
+
+// Add function to handle group updates
+function handleGroupUpdate(data) {
+    if (data.action === 'created' || data.action === 'updated') {
+        // Refresh chats list to show the new/updated group
+        loadChats().then(() => {
+            // If this is the current group, refresh the title
+            if (currentGroupId === data.group_id) {
+                chatTitle.textContent = data.name;
+            }
+        });
+    } else if (data.action === 'deleted') {
+        // If the current group was deleted, clear the view
+        if (currentGroupId === data.group_id) {
+            currentGroupId = null;
+            messagesContainer.innerHTML = "";
+            chatTitle.textContent = "Выберите чат";
+            if (ws) ws.close();
+        }
+        // Refresh the chats list
+        loadChats();
+    }
+}
+
+// ==== НАЧАЛО блока настроек ====
+function applySettings() {
+  const dark = localStorage.getItem('darkTheme') === 'true';
+  document.getElementById('themeToggle').checked = dark;
+  document.body.classList.toggle('dark-theme', dark);
+
+  const bg = localStorage.getItem('chatBg');
+  if (bg) {
+    document.querySelector('.chat-container').style.backgroundImage = `url(${bg})`;
+    document.querySelector('.chat-container').style.backgroundSize = 'cover';
+  }
+}
+
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  openModal('settingsModal');
+});
+
+document.getElementById('themeToggle').addEventListener('change', e => {
+  const on = e.target.checked;
+  document.body.classList.toggle('dark-theme', on);
+  localStorage.setItem('darkTheme', on);
+});
+
+document.getElementById('bgInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    localStorage.setItem('chatBg', reader.result);
+    document.querySelector('.chat-container').style.backgroundImage = `url(${reader.result})`;
+  };
+  reader.readAsDataURL(file);
+});
+
+function resetSettings() {
+  localStorage.removeItem('darkTheme');
+  localStorage.removeItem('chatBg');
+  document.getElementById('themeToggle').checked = false;
+  document.body.classList.remove('dark-theme');
+  document.querySelector('.chat-container').style.backgroundImage = '';
+  closeModal('settingsModal');
+}
+
+// При загрузке страницы
+document.addEventListener('DOMContentLoaded', applySettings);
+// ==== КОНЕЦ блока настроек ====

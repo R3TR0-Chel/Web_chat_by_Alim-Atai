@@ -1,23 +1,25 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from typing import List
+from typing import Dict, List
 import datetime
-from uuid import uuid4
-
+from uuid import uuid4  # если это отдельный модуль
 from database import SessionLocal, engine
 from models import Base, User, Group, GroupUser, Message
 from schemas import PrivateChatCreate, UserCreate, UserOut, GroupCreate, GroupOut, MessageCreate, MessageOut
 from auth import create_access_token, get_current_user
 from websocket_manager import ConnectionManager
 
+chat_router = APIRouter()
 # Создаем таблицы
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
+app.include_router(chat_router)
+# Расширяем WebSocket-менеджер поддержкой по user_id
+chat_group_subscriptions: Dict[int, List[WebSocket]] = {}
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -97,9 +99,13 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int, db: Session = 
                     "id": new_msg.id,
                     "content": new_msg.content,
                     "author_id": new_msg.author_id,
-                    "author_username": author.username,
+                    "author": {
+                        "id": author.id,
+                        "username": author.username
+                    },
                     "group_id": new_msg.group_id,
-                    "timestamp": new_msg.timestamp.isoformat()
+                    "timestamp": new_msg.timestamp.isoformat(),
+                    "edited": 0
                 }
             }
 
@@ -110,7 +116,7 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int, db: Session = 
         manager.disconnect(websocket, group_id)
     except Exception as e:
         print(f"WebSocket error: {e}")
-        await websocket.send_json({"error": "Internal server error"})
+        await websocket.send_json({"error": f"Internal server error: {str(e)}"})
         manager.disconnect(websocket, group_id)
 
 # Пользователи
@@ -145,7 +151,7 @@ def login(user: UserCreate, db: Session = Depends(get_db)):
 
 # Группы и чаты
 @app.post("/groups", response_model=GroupOut)
-def create_group(group: GroupCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+async def create_group(group: GroupCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     db_group = Group(name=group.name, background=group.background)
     db.add(db_group)
     db.commit()
@@ -155,6 +161,18 @@ def create_group(group: GroupCreate, current_user=Depends(get_current_user), db:
     group_user = GroupUser(group_id=db_group.id, user_id=current_user.id)
     db.add(group_user)
     db.commit()
+    
+    # Broadcast group creation to connected clients
+    group_data = {
+        "type": "group_update",
+        "data": {
+            "action": "created",
+            "group_id": db_group.id,
+            "name": db_group.name,
+            "type": "group"
+        }
+    }
+    await notify_users_in_group_update(db_group.id, db, "created")
     
     return db_group
 
@@ -187,14 +205,31 @@ def get_group_users(group_id: int, current_user=Depends(get_current_user), db: S
     return [{"id": user.id, "username": user.username} for user in users]
 
 @app.delete("/groups/{group_id}")
-def delete_group(group_id: int, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+async def delete_group(group_id: int, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     if not db.query(GroupUser).filter(GroupUser.group_id == group_id, GroupUser.user_id == current_user.id).first():
         raise HTTPException(status_code=403, detail="You are not in this group")
+    
+    # Keep name for the broadcast
+    group_name = group.name
+    
     db.delete(group)
     db.commit()
+    
+    # Broadcast group deletion
+    group_data = {
+        "type": "group_update",
+        "data": {
+            "action": "deleted",
+            "group_id": group_id,
+            "name": group_name
+        }
+    }
+    
+    await notify_users_in_group_update(group_id, db, "deleted")
+    
     return {"message": "Group deleted"}
 
 # Сообщения
@@ -246,7 +281,7 @@ async def edit_message(message_id: int, message_update: MessageCreate, current_u
         raise HTTPException(status_code=403, detail="Not authorized to edit this message")
     
     msg.content = message_update.content
-    msg.edited += 1
+    msg.edited = msg.edited + 1 if msg.edited else 1
     db.commit()
     db.refresh(msg)
     
@@ -257,9 +292,13 @@ async def edit_message(message_id: int, message_update: MessageCreate, current_u
                 "id": msg.id,
                 "content": msg.content,
                 "author_id": msg.author_id,
-                "author_username": current_user.username,
+                "author": {
+                    "id": current_user.id,
+                    "username": current_user.username
+                },
                 "group_id": msg.group_id,
-                "timestamp": msg.timestamp.isoformat()
+                "timestamp": msg.timestamp.isoformat(),
+                "edited": msg.edited
             }
         }
         await manager.broadcast_to_group(message_data, msg.group_id)
@@ -274,11 +313,19 @@ async def delete_message(message_id: int, current_user=Depends(get_current_user)
     if msg.author_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this message")
     
+    group_id = msg.group_id
+    
     db.delete(msg)
     db.commit()
     
-    if msg.group_id:
-        await manager.broadcast_to_group({"type": "deleted_message", "data": {"id": message_id}}, msg.group_id)
+    if group_id:
+        await manager.broadcast_to_group({
+            "type": "deleted_message", 
+            "data": {
+                "id": message_id,
+                "group_id": group_id
+            }
+        }, group_id)
     
     return {"message": "Message deleted"}
 
@@ -329,3 +376,37 @@ def create_private_chat(chat: PrivateChatCreate, db: Session = Depends(get_db)):
         "type": "private",
         "background": db_group.background
     }
+    
+@chat_router.websocket("/ws/chats/{user_id}")
+async def chat_updates_ws(websocket: WebSocket, user_id: int):
+    await websocket.accept()
+
+    if user_id not in chat_group_subscriptions:
+        chat_group_subscriptions[user_id] = []
+    chat_group_subscriptions[user_id].append(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()  # держим соединение открытым
+    except Exception:
+        pass
+    finally:
+        chat_group_subscriptions[user_id].remove(websocket)
+        if not chat_group_subscriptions[user_id]:
+            del chat_group_subscriptions[user_id]
+
+# Утилита: уведомить всех пользователей, у которых изменился список чатов
+async def notify_users_in_group_update(group_id: int, db: Session, action: str):
+    users = db.query(GroupUser).filter(GroupUser.group_id == group_id).all()
+    group = db.query(Group).filter(Group.id == group_id).first()
+    for user in users:
+        ws_list = chat_group_subscriptions.get(user.user_id, [])
+        for ws in ws_list:
+            await ws.send_json({
+                "type": "group_update",
+                "data": {
+                    "group_id": group.id,
+                    "name": group.name,
+                    "action": action
+                }
+            })
